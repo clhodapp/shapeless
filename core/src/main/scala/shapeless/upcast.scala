@@ -20,8 +20,8 @@ import scala.language.experimental.macros
 import scala.reflect.macros.whitebox
 
 trait Upcast[T] {
-  type P <: HList
-  def asParents(t: T): P
+  type P
+  def upcast(t: T): P
 }
 object Upcast {
   type Aux[T, P0] = Upcast[T] { type P = P0 }
@@ -30,25 +30,17 @@ object Upcast {
   def upcastImpl[T: c.WeakTypeTag](c: whitebox.Context): c.Tree = {
     import c.universe._
     val tpe = weakTypeOf[T]
+    val baseTypes = (tpe match {
+      case RefinedType(b, _) => b
+      case other => weakTypeOf[T].baseClasses.map(tpe.baseType(_))
+    }).map(TypeTree(_))
+    val parentType = baseTypes.tail.reduceOption[Tree]((a, b) => tq"$a with $b").getOrElse(tq"Any")
     val nme = TermName(c.freshName("upcast"))
-    val bases = weakTypeOf[T].baseClasses.map(tpe.baseType(_))
-    val pTpe = bases.foldRight[c.Tree](tq"_root_.shapeless.HNil") { (a, b) =>
-      tq"_root_.shapeless.::[$a, $b]"
-    }
-    val upcasted = bases.foldRight[c.Tree](q"_root_.shapeless.HNil") { (a, b) =>
-      q"_root_.shapeless.::($nme.asInstanceOf[$a], $b)"
-    }
     q"""
-      {
-        import _root_.shapeless.::
-        import _root_.shapeless.Upcast
-        new Upcast[$tpe] {
-          type P = $pTpe
-          def asParents($nme: $tpe): P = {
-            $upcasted
-          }
-        }
-      }: Upcast.Aux[$tpe, $pTpe]
+      new _root_.shapeless.Upcast[$tpe] {
+        type P = $parentType
+        def upcast($nme: $tpe): P = $nme
+      }: Upcast.Aux[$tpe, $parentType]
     """
   }
 }
