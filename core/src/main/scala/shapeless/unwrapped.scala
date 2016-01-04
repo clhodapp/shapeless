@@ -20,14 +20,13 @@ import newtype._
 
 import language.experimental.macros
 import reflect.macros.whitebox
-import scala.reflect.internal.annotations.compileTimeOnly
 
 class UnwrappedMacros(val c: whitebox.Context) extends CaseClassMacros {
   import c.universe._
 
   def mkUnwrapSelf[T: WeakTypeTag]: Tree = {
     val tpe = weakTypeOf[T]
-    q"new _root_.shapeless.Unwrapped.MacroSelfUnwrapped[$tpe]"
+    q"_root_.shapeless.Unwrapped.TheMacroSelfUnwrapped.asInstanceOf[_root_.shapeless.Unwrapped.MacroSelfUnwrapped[$tpe]]"
   }
   def identity[T](t: Tree): Tree = t
 
@@ -95,6 +94,9 @@ class UnwrappedMacros(val c: whitebox.Context) extends CaseClassMacros {
     val uTpe = weakTypeOf[U]
     q"_root_.shapeless.the[_root_.shapeless.Unwrapped[$uTpe]].wrap($u).asInstanceOf[$wTpe]"
   }
+
+  def unwrap(uw: Tree): Tree = q"$uw.unwrap(${c.prefix}.t)"
+  def wrap(uw: Tree): Tree = q"$uw.wrap(${c.prefix}.t)"
 }
 
 trait Unwrapped[W] extends Serializable {
@@ -116,29 +118,27 @@ object Unwrapped extends UnwrappedInstances {
     def unwrap(w: W): U = u(w)
     def wrap(u: U): W = w(u)
   }
+  object TheConcreteSelfUnwrapped extends ConcreteUnwrapped[Any, Any](
+    identity,
+    identity
+  )
 
-  class MacroSelfUnwrapped[T] extends ConcreteUnwrapped[T, T](
+  class IdentityUnwrapped[T] extends ConcreteUnwrapped[T, T](
     identity,
     identity
   ) {
     override def unwrap(t: T): T = macro UnwrappedMacros.identity[T]
     override def wrap(t: T): T = macro UnwrappedMacros.identity[T]
   }
+  object IdentityUnwrapped extends IdentityUnwrapped[Any]
 
-  class MacroAnyValUnwrapped[W <: AnyVal, UI, UF](
+
+  class AnyValUnwrapped[W <: AnyVal, UI, UF](
     u: W => UF,
     w: UF => W
   ) extends ConcreteUnwrapped[W, UF](u, w) {
     override def unwrap(w: W): UF = macro UnwrappedMacros.unwrapAnyVal[W, UI]
     override def wrap(u: U): W = macro UnwrappedMacros.wrapAnyVal[W, UI]
-  }
-
-  class MacroNewtypeUnwrapped[W, UI, UF](
-    u: W => UF,
-    w: UF => W
-  ) extends ConcreteUnwrapped[W, UF](u, w) {
-    override def unwrap(w: W): UF = macro UnwrappedMacros.unwrapNewtype[W, UI]
-    override def wrap(u: U): W = macro UnwrappedMacros.wrapNewtype[W, UI]
   }
 
 }

@@ -17,9 +17,12 @@
 package shapeless
 package syntax
 
+import language.experimental.macros
+
 object unwrapped {
-  implicit class UnwrappedSyntax[T](val t: T) extends AnyVal {
-    def unwrap[U](implicit uw: Unwrapped.Aux[T, U]): U = uw.unwrap(t)
-    def wrap[W](implicit uw: Unwrapped.Aux[W, T]): W = uw.wrap(t)
+  class UnwrappedSyntax[T](val t: T) {
+    def unwrap[U](implicit uw: Unwrapped.Aux[T, U]): U = macro UnwrappedMacros.unwrap
+    def wrap[U](implicit uw: Unwrapped.Aux[U, T]): U = macro UnwrappedMacros.wrap
   }
+  implicit def unwrappedSyntax[T](t: T) = null: UnwrappedSyntax[T]
 }
