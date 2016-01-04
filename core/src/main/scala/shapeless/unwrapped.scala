@@ -18,6 +18,85 @@ package shapeless
 
 import newtype._
 
+import language.experimental.macros
+import reflect.macros.whitebox
+import scala.reflect.internal.annotations.compileTimeOnly
+
+class UnwrappedMacros(val c: whitebox.Context) extends CaseClassMacros {
+  import c.universe._
+
+  def mkUnwrapSelf[T: WeakTypeTag]: Tree = {
+    val tpe = weakTypeOf[T]
+    q"new _root_.shapeless.Unwrapped.MacroSelfUnwrapped[$tpe]"
+  }
+  def identity[T](t: Tree): Tree = t
+
+  def mkUnwrapAnyVal[W <: AnyVal : WeakTypeTag]: Tree = {
+    val wTpe = weakTypeOf[W]
+    // For some reason, the compiler doesn't seem to respect
+    // the AnyVal bound on the parameter and calls this macro
+    // with things like String... Seems like a bug...
+    if (!(wTpe <:< typeOf[AnyVal])) abort("not an AnyVal")
+    val fields = fieldsOf(wTpe)
+    if (fields.isEmpty) q"new _root_.shapeless.Unwrapped.MacroSelfUnwrapped[$wTpe]"
+    else {
+      val wrapped = fields.head._1
+      val uTpe = fields.head._2
+      val wParam = TermName(c.freshName("w"))
+      val uParam = TermName(c.freshName("u"))
+      val chainTpe = appliedType(typeOf[Unwrapped[_]].typeConstructor, uTpe)
+      val chain = c.inferImplicitValue(chainTpe, silent = true)
+      val ufTpe = chain.tpe.member(TypeName("U")).typeSignatureIn(chain.tpe)
+      q"""
+        new _root_.shapeless.Unwrapped.MacroAnyValUnwrapped[$wTpe, $uTpe, $ufTpe](
+          ($wParam: $wTpe) => $chain.unwrap($wParam.$wrapped),
+          ($uParam: $ufTpe) => new $wTpe($chain.wrap($uParam))
+        )
+      """
+    }
+  }
+  def unwrapAnyVal[W <: AnyVal: WeakTypeTag, U: WeakTypeTag](w: Tree): Tree = {
+    val wTpe = weakTypeOf[W]
+    val uTpe = weakTypeOf[U]
+    val fields = fieldsOf(wTpe)
+    val wrapped = fields.head._1
+    q"_root_.shapeless.the[_root_.shapeless.Unwrapped[$uTpe]].unwrap($w.$wrapped)"
+  }
+  def wrapAnyVal[W <: AnyVal: WeakTypeTag, U: WeakTypeTag](u: Tree): Tree = {
+    val wTpe = weakTypeOf[W]
+    val uTpe = weakTypeOf[U]
+    val fields = fieldsOf(wTpe)
+    q"new $wTpe(_root_.shapeless.the[_root_.shapeless.Unwrapped[$uTpe]].wrap($u))"
+  }
+
+  def mkUnwrapNewtype[Repr: WeakTypeTag, Ops: WeakTypeTag]: Tree = {
+    val wTpe = weakTypeOf[Newtype[Repr, Ops]]
+    val uTpe = weakTypeOf[Repr]
+    val wParam = TermName(c.freshName("w"))
+    val uParam = TermName(c.freshName("u"))
+    val chainTpe = appliedType(typeOf[Unwrapped[_]].typeConstructor, uTpe)
+    val chain = c.inferImplicitValue(chainTpe, silent = true)
+    val ufTpe = chain.tpe.member(TypeName("U")).typeSignatureIn(chain.tpe)
+    q"""
+      new _root_.shapeless.Unwrapped.MacroNewtypeUnwrapped[$wTpe, $uTpe, $ufTpe](
+        ($wParam: $wTpe) => $chain.unwrap($wParam.asInstanceOf[$uTpe]),
+        ($uParam: $ufTpe) => $chain.wrap($uParam).asInstanceOf[$wTpe]
+      )
+    """
+  }
+  def unwrapNewtype[W: WeakTypeTag, U: WeakTypeTag](w: Tree): Tree = {
+    val wTpe = weakTypeOf[W]
+    val uTpe = weakTypeOf[U]
+    val fields = fieldsOf(wTpe)
+    q"_root_.shapeless.the[_root_.shapeless.Unwrapped[$uTpe]].unwrap($w.asInstanceOf[$uTpe])"
+  }
+  def wrapNewtype[W: WeakTypeTag, U: WeakTypeTag](u: Tree): Tree = {
+    val wTpe = weakTypeOf[W]
+    val uTpe = weakTypeOf[U]
+    q"_root_.shapeless.the[_root_.shapeless.Unwrapped[$uTpe]].wrap($u).asInstanceOf[$wTpe]"
+  }
+}
+
 trait Unwrapped[W] extends Serializable {
   type U
   def unwrap(w: W): U
@@ -27,47 +106,52 @@ trait Unwrapped[W] extends Serializable {
 object Unwrapped extends UnwrappedInstances {
   type Aux[W, U0] = Unwrapped[W] { type U = U0 }
   def apply[W](implicit w: Unwrapped[W]): Aux[W, w.U] = w
+
+
+  class ConcreteUnwrapped[W, U0](
+    u: W => U0,
+    w: U0 => W
+  ) extends Unwrapped[W] {
+    type U = U0
+    def unwrap(w: W): U = u(w)
+    def wrap(u: U): W = w(u)
+  }
+
+  class MacroSelfUnwrapped[T] extends ConcreteUnwrapped[T, T](
+    identity,
+    identity
+  ) {
+    override def unwrap(t: T): T = macro UnwrappedMacros.identity[T]
+    override def wrap(t: T): T = macro UnwrappedMacros.identity[T]
+  }
+
+  class MacroAnyValUnwrapped[W <: AnyVal, UI, UF](
+    u: W => UF,
+    w: UF => W
+  ) extends ConcreteUnwrapped[W, UF](u, w) {
+    override def unwrap(w: W): UF = macro UnwrappedMacros.unwrapAnyVal[W, UI]
+    override def wrap(u: U): W = macro UnwrappedMacros.wrapAnyVal[W, UI]
+  }
+
+  class MacroNewtypeUnwrapped[W, UI, UF](
+    u: W => UF,
+    w: UF => W
+  ) extends ConcreteUnwrapped[W, UF](u, w) {
+    override def unwrap(w: W): UF = macro UnwrappedMacros.unwrapNewtype[W, UI]
+    override def wrap(u: U): W = macro UnwrappedMacros.wrapNewtype[W, UI]
+  }
+
 }
 
 trait UnwrappedInstances extends LowPriorityUnwrappedInstances {
-  implicit def unwrapAnyVal[W <: AnyVal, Repr, UI, UF](implicit
-    gen: Generic.Aux[W, Repr],
-    avh: AnyValHelper.Aux[Repr, UI],
-    chain: Strict[Unwrapped.Aux[UI, UF]]
-  ) = new Unwrapped[W] {
-    type U = UF
-    def unwrap(w: W): U = chain.value.unwrap(avh.unwrap(gen.to(w)))
-    def wrap(u: U): W = gen.from(avh.wrap(chain.value.wrap(u)))
-  }
 
-  sealed trait AnyValHelper[Repr] extends Serializable {
-    type U
-    def unwrap(r: Repr): U
-    def wrap(u: U): Repr
-  }
-  object AnyValHelper {
-    type Aux[Repr, U0] = AnyValHelper[Repr] { type U = U0 }
-    implicit def sizeOneHListHelper[T] = new AnyValHelper[T :: HNil] {
-      type U = T
-      def unwrap(hl: T :: HNil): T = hl.head
-      def wrap(t: T): T :: HNil = t :: HNil
-    }
-  }
-
-  implicit def newtypeUnwrapped[UI, Ops, UF](implicit chain: Strict[Unwrapped.Aux[UI, UF]])=
-    new Unwrapped[Newtype[UI, Ops]] {
-      type U = UF
-      def unwrap(n: Newtype[UI, Ops]): UF = chain.value.unwrap(n.asInstanceOf[UI])
-      def wrap(u: UF): Newtype[UI, Ops] = chain.value.wrap(u).asInstanceOf[Newtype[UI, Ops]]
-    }
+  implicit def unwrapAnyVal[W <: AnyVal, T]: Unwrapped.Aux[W, T] =
+    macro UnwrappedMacros.mkUnwrapAnyVal[W]
+  implicit def unwrapNewtype[Repr, Ops]: Unwrapped[Newtype[Repr, Ops]] =
+    macro UnwrappedMacros.mkUnwrapNewtype[Repr, Ops]
 
 }
 
 trait LowPriorityUnwrappedInstances {
-  implicit def selfUnwrapped[T] =
-    new Unwrapped[T] {
-      type U = T
-      def unwrap(t: T) = t
-      def wrap(t: T) = t
-    }
+  implicit def selfUnwrapped[T]: Unwrapped.Aux[T, T] = macro UnwrappedMacros.mkUnwrapSelf[T]
 }
