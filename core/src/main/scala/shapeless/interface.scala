@@ -203,8 +203,11 @@ class InterfaceMacros(val c: whitebox.Context) extends SingletonTypeUtils {
         if (tpe.typeSymbol.isClass && tpe.typeSymbol.asClass.isTrait) Right {
           tpe
             .members
-            .flatMap(_.alternatives)
-            .filterNot(member => defaultBaseTypeSymbols contains member.owner)
+            .flatMap { member =>
+              if (member.isTerm) {
+                member.asTerm.alternatives.toList
+              } else List(member)
+            }.filterNot(member => defaultBaseTypeSymbols contains member.owner)
             .toList
         } else Left(NotTrait(tpe))
       }
@@ -257,6 +260,11 @@ class InterfaceMacros(val c: whitebox.Context) extends SingletonTypeUtils {
 
   def valueHCons(a: Tree, b: Tree): Tree = q"_root_.shapeless.::($a, $b)"
   val valueHNil: Tree = q"_root_.shapeless.HNil"
+
+  def selectByIndex(l: Tree, n: Int): Tree = {
+    if (n == 0) q"$l.head"
+    else selectByIndex(q"$l.tail", n - 1)
+  }
 
   def materializeInterface[T: WeakTypeTag, R: WeakTypeTag](
     typeclassName: String,
@@ -331,7 +339,7 @@ class InterfaceMacros(val c: whitebox.Context) extends SingletonTypeUtils {
                     .zipWithIndex
                     .map { case (paramList, listIndex) =>
                       paramList.zipWithIndex.map { case (name, paramIndex) =>
-                        q"$param.apply($listIndex).apply($paramIndex)" }
+                        selectByIndex(selectByIndex(q"$param", listIndex), paramIndex) }
                     }
                 }
                 val paramType = {
@@ -361,7 +369,7 @@ class InterfaceMacros(val c: whitebox.Context) extends SingletonTypeUtils {
                         q"${param.name}.asInstanceOf[$paramReprTpe]"
                       }.foldRight(valueHNil)(valueHCons)
                     }.foldRight(valueHNil)(valueHCons)
-                q"$target.apply($idx).apply($arg)"
+                q"${selectByIndex(q"$target", idx)}.apply($arg)"
               }
               val parameters = paramLists.map { paramList =>
                 paramList.map { param =>
@@ -370,20 +378,29 @@ class InterfaceMacros(val c: whitebox.Context) extends SingletonTypeUtils {
               }
               q"""def $name(...$parameters) = $body"""
           }
-          q"""
-            val $target = r
-            new ${weakTypeOf[T]} {
-              ..$members
-            }
-          """
+          if (members.nonEmpty) {
+            q"""
+              val $target = r
+              new ${weakTypeOf[T]} {
+                ..$members
+              }
+            """
+          } else {
+            q"""
+              val $target = r
+              new ${weakTypeOf[T]} {}
+            """
+          }
         }
         val tpeNme = TypeName(typeclassName)
+        val clsName = TypeName(c.freshName("anon$"))
         q"""
-          new _root_.shapeless.$tpeNme[${weakTypeOf[T]}] {
+          class $clsName extends _root_.shapeless.$tpeNme[${weakTypeOf[T]}] {
             type Repr = ${reprTypeTree}
             def to(t: ${weakTypeOf[T]}): ${reprTypeTree} = $toGeneric
             def from(r: ${reprTypeTree}): ${weakTypeOf[T]} = $toConcrete
           }
+          new $clsName(): _root_.shapeless.${tpeNme.toTermName}.Aux[${weakTypeOf[T]}, $reprTypeTree]
         """
     }
 

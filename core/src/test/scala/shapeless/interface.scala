@@ -16,12 +16,28 @@
 
 package shapeless
 
+import syntax.typeable._
+
 import reflect.ClassTag
 
 import org.junit.Test
 import org.junit.Assert._
 
 import java.nio.ByteBuffer
+
+package rpcService {
+
+  trait Iface {
+    def add(a: Int, b: Int): Int
+    def concat(s1: String, s2: String): String
+  }
+
+  object Impl extends Iface {
+    def add(a: Int, b: Int): Int = a + b
+    def concat(s1: String, s2: String): String = s1 ++ s2
+  }
+
+}
 
 package rpcFramework {
 
@@ -161,7 +177,7 @@ package rpcFramework {
         def apply(t: T) = new Endpoint {
           val repr = iface.to(t)
           val flat = fpl.flatten(repr)
-          val handlers = th.toHandlers(flat).toArray.reverse
+          val handlers = th.toHandlers(flat).toVector.reverse
           def call(request: RpcRequest) = {
             if (request.op <= handlers.size) handlers(request.op)(request.args)
             else Left("No handler for method")
@@ -184,16 +200,17 @@ package rpcFramework {
           case other => Left("Invalid args")
         }
     }
-    implicit def hconsArgsCodec[H: ClassTag, T <: HList: ArgsCodec]: ArgsCodec[H :: T] =
+    implicit def hconsArgsCodec[H: Typeable, T <: HList: ArgsCodec: Typeable]: ArgsCodec[H :: T] =
       new ArgsCodec[H :: T] {
         def toWire(hl: H :: T): Args = Args(hl)
         def fromWire(args: Args): Either[String, H :: T] = {
-          args.raw match {
-            case (h: H) :: t =>
+          args.raw.cast[H :: T] match {
+            case Some(h :: t) => {
               implicitly[ArgsCodec[T]]
                 .fromWire(Args(t))
                 .right.map(t => h :: t)
-            case other => Left("Invalid args")
+            }
+            case None => Left("Invalid args")
           }
         }
       }
@@ -204,13 +221,13 @@ package rpcFramework {
     def fromWire(response: RpcResponse): Either[String, T]
   }
   object ResponseCodec {
-    implicit def rpcResponseCodec[T: ClassTag]: ResponseCodec[T] = {
+    implicit def rpcResponseCodec[T: Typeable]: ResponseCodec[T] = {
       new ResponseCodec[T] {
         def toWire(t: T): RpcResponse = RpcResponse(t)
         def fromWire(response: RpcResponse): Either[String, T] = {
-          response.raw match {
-            case t: T => Right(t)
-            case other => Left("Invalid response")
+          response.raw.cast[T] match {
+            case Some(t) => Right(t)
+            case None => Left("Invalid response")
           }
         }
       }
@@ -220,20 +237,6 @@ package rpcFramework {
   case class RpcRequest(op: Int, args: Args)
   case class Args(raw: Any)
   case class RpcResponse(raw: Any)
-
-}
-
-package rpcService {
-
-  trait Iface {
-    def add(a: Int, b: Int): Int
-    def concat(s1: String, s2: String): String
-  }
-
-  object Impl extends Iface {
-    def add(a: Int, b: Int): Int = a + b
-    def concat(s1: String, s2: String): String = s1 ++ s2
-  }
 
 }
 
@@ -380,6 +383,7 @@ package tracingFramework {
     }
   }
 }
+
 
 class InterfaceTests {
 
